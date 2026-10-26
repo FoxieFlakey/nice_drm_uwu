@@ -1,0 +1,204 @@
+use std::{
+    io,
+    ops::Range,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
+
+use drm::{Device, control::Device as ControlDevice};
+use thiserror::Error;
+
+use crate::{
+    drm_type::NodeType,
+    fds::PrimaryGpuFd,
+    gpu::{self, Gpu},
+    primary_gpu::{connector::Connector, crtc::Crtc, encoder::Encoder, master_state::MasterGuard},
+    util::{self, retry_eintr},
+};
+
+pub mod connector;
+pub mod crtc;
+pub mod encoder;
+pub mod master_state;
+pub mod mode;
+
+pub struct PrimaryGpu {
+    base: Arc<Gpu>,
+    fd: PrimaryGpuFd,
+    known_crtcs: OnceLock<Vec<Arc<Crtc>>>,
+    known_encoders: OnceLock<Vec<Arc<Encoder>>>,
+    supported_fb_width: Range<u32>,
+    supported_fb_height: Range<u32>,
+}
+
+impl AsRef<Arc<Gpu>> for PrimaryGpu {
+    fn as_ref(&self) -> &Arc<Gpu> {
+        &self.base
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum GetConnectorsError {
+    #[error("Cannot get GPU resources")]
+    GetResources(#[source] io::Error),
+    #[error("Cannot get connector info {0:?}")]
+    CannotMakeConnector(
+        drm::control::connector::Handle,
+        #[source] connector::ProbeConnectorError,
+    ),
+}
+
+#[derive(Error, Debug)]
+pub enum CreatingPrimaryGPUError {
+    #[error("This GPU is not primary GPU")]
+    GPUIsNotPrimary,
+    #[error("Cannot get GPU resources")]
+    GetResourcesOnGPU(#[source] io::Error),
+    #[error("Cant query encoder information for {0:?}")]
+    QueryEncoderInformation(
+        drm::control::encoder::Handle,
+        #[source] encoder::CreatingEncoderError,
+    ),
+}
+
+#[derive(Error, Debug)]
+#[error("Cannot lock as master")]
+pub struct MasterLockError(#[source] io::Error);
+
+#[derive(Error, Debug)]
+pub enum OpenError {
+    #[error("Cannot open GPU")]
+    OpenGPU(#[source] gpu::OpenError),
+    #[error("Cannot create primary GPU")]
+    CantMakePrimaryGPU(#[source] CreatingPrimaryGPUError),
+}
+
+impl PrimaryGpu {
+    pub fn open<P: AsRef<Path> + ?Sized>(path: &P) -> Result<Arc<Self>, OpenError> {
+        Self::try_from_gpu(Gpu::open(path).map_err(OpenError::OpenGPU)?)
+            .map_err(OpenError::CantMakePrimaryGPU)
+    }
+
+    pub fn get_basic_gpu(&self) -> &Arc<Gpu> {
+        &self.base
+    }
+
+    fn find_crtc<'a>(&'a self, handle: drm::control::crtc::Handle) -> Option<&'a Arc<Crtc>> {
+        let known_crtcs = self
+            .known_crtcs
+            .get()
+            .expect("known_crtcs are not initialized yet");
+
+        known_crtcs
+            .binary_search_by_key(&u32::from(handle), |x| u32::from(x.handle))
+            .ok()
+            .map(|x| &known_crtcs[x])
+    }
+
+    fn find_encoder<'a>(
+        &'a self,
+        handle: drm::control::encoder::Handle,
+    ) -> Option<&'a Arc<Encoder>> {
+        let known_encoders = self
+            .known_encoders
+            .get()
+            .expect("known_crtcs are not initialized yet");
+
+        known_encoders
+            .binary_search_by_key(&u32::from(handle), |x| u32::from(x.handle))
+            .ok()
+            .map(|x| &known_encoders[x])
+    }
+
+    pub fn try_from_gpu(gpu: Arc<Gpu>) -> Result<Arc<Self>, CreatingPrimaryGPUError> {
+        match gpu.get_type() {
+            NodeType::Primary => {
+                let fd = PrimaryGpuFd(gpu.gpu.clone());
+                let resources = retry_eintr(|| fd.resource_handles())
+                    .map_err(CreatingPrimaryGPUError::GetResourcesOnGPU)?;
+
+                let this = Arc::new(Self {
+                    fd,
+                    base: gpu,
+                    known_crtcs: OnceLock::new(),
+                    known_encoders: OnceLock::new(),
+                    supported_fb_height: util::to_standard_range(resources.supported_fb_height()),
+                    supported_fb_width: util::to_standard_range(resources.supported_fb_height()),
+                });
+
+                let mut crtcs = Vec::new();
+                for &crtc in &resources.crtcs {
+                    crtcs.push(Arc::new(Crtc::from_raw(Arc::downgrade(&this), crtc)));
+                }
+
+                crtcs.sort_by_key(|x| u32::from(x.handle));
+                this.known_crtcs
+                    .set(crtcs)
+                    .ok()
+                    .expect("Nothing should initialized the known_crtcs");
+
+                let mut encoders = Vec::new();
+                for &encoder in &resources.encoders {
+                    encoders.push(Arc::new(
+                        Encoder::from_raw(Arc::downgrade(&this), encoder, &resources).map_err(
+                            |e| CreatingPrimaryGPUError::QueryEncoderInformation(encoder, e),
+                        )?,
+                    ));
+                }
+
+                encoders.sort_by_key(|x| u32::from(x.handle));
+                this.known_encoders
+                    .set(encoders)
+                    .ok()
+                    .expect("Nothing should initialized the known_encoders");
+
+                Ok(this)
+            }
+            NodeType::Render => Err(CreatingPrimaryGPUError::GPUIsNotPrimary),
+        }
+    }
+
+    pub fn get_crtcs<'a>(&'a self) -> &'a [Arc<Crtc>] {
+        self.known_crtcs
+            .get()
+            .expect("Known crtcs should not be uninitiliazed")
+    }
+
+    pub fn get_encoders<'a>(&'a self) -> &'a [Arc<Encoder>] {
+        self.known_encoders
+            .get()
+            .expect("Known encoders should not be uninitiliazed")
+    }
+
+    pub fn get_connectors(
+        self: &Arc<Self>,
+        force_probe: bool,
+    ) -> Result<Vec<Connector>, GetConnectorsError> {
+        let resources = self
+            .fd
+            .resource_handles()
+            .map_err(GetConnectorsError::GetResources)?;
+        let mut connectors = Vec::new();
+        for handle in resources.connectors {
+            connectors.push(
+                Connector::from_raw(self.clone(), handle, force_probe)
+                    .map_err(|e| GetConnectorsError::CannotMakeConnector(handle, e))?,
+            );
+        }
+
+        Ok(connectors)
+    }
+
+    pub fn lock_master<'a>(&'a self) -> Result<MasterGuard<'a>, MasterLockError> {
+        retry_eintr(|| self.fd.acquire_master_lock()).map_err(MasterLockError)?;
+        Ok(MasterGuard { gpu: self })
+    }
+
+    pub fn supported_fb_width(&self) -> Range<u32> {
+        self.supported_fb_width.clone()
+    }
+
+    pub fn supported_fb_height(&self) -> Range<u32> {
+        self.supported_fb_height.clone()
+    }
+}
