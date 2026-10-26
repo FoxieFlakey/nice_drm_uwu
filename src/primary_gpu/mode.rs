@@ -119,7 +119,7 @@ impl Mode {
         }
 
         // Vscan multiplies the scanlines per vertical line
-        den *= f64::from(self.vscan());
+        den *= f64::from(self.vscan()).max(1.0);
 
         // Calculate precision decimal refresh rate
         return (clock_hz * num) / (total_pixels * den);
