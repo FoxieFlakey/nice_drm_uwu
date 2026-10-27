@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dma-buf = { version = "0.1.0", path = "../dma-buf/dma-buf" }
 drm = "0.15.0"
 drm-ffi = "0.9.1"
 nix = "0.31.3"
