@@ -7,13 +7,15 @@ use std::{
     sync::Arc,
 };
 
-use drm::Device;
+pub use drm::ClientCapability;
+use drm::{Device, DriverCapability};
 use thiserror::Error;
 
 use crate::{
     driver_info::{DriverInfo, GetDriverInfoError},
     drm_type::{FindNodeTypeError, NodeType},
     fds::BasicGpuFd,
+    util::retry_eintr,
 };
 
 pub struct Gpu {
@@ -55,6 +57,8 @@ impl Gpu {
             .into_string()
             .map_err(OpenError::InvalidBusID)?;
 
+        // Pretty specific set of supports, dont care about older DRM drivers
+
         Ok(Arc::new(Self {
             kind,
             driver: DriverInfo::make(&gpu).map_err(OpenError::GettingDriverInfo)?,
@@ -73,5 +77,43 @@ impl Gpu {
 
     pub fn get_type(&self) -> NodeType {
         self.kind
+    }
+
+    pub fn set_client_capability(
+        &self,
+        capability: ClientCapability,
+        enable: bool,
+    ) -> io::Result<()> {
+        retry_eintr(|| self.gpu.set_client_capability(capability, enable))
+    }
+
+    fn get_driver_capability(&self, capability: DriverCapability) -> io::Result<u64> {
+        retry_eintr(|| self.gpu.get_driver_capability(capability))
+    }
+
+    pub fn is_atomic_page_flip_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::AtomicASyncPageFlip)? != 0)
+    }
+
+    pub fn is_dumb_buffer_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::DumbBuffer)? != 0)
+    }
+
+    pub fn is_timeline_syncobj_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::TimelineSyncObj)? != 0)
+    }
+
+    pub fn is_syncobj_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::SyncObj)? != 0)
+    }
+
+    pub fn is_monotonic_timestamp_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::MonotonicTimestamp)? != 0)
+    }
+
+    // NOTE: This would required entire import + export enabled at once
+    pub fn is_prime_handle_supported(&self) -> io::Result<bool> {
+        let ret = self.get_driver_capability(DriverCapability::Prime)?;
+        Ok(ret & u64::from(drm_ffi::DRM_PRIME_CAP_EXPORT | drm_ffi::DRM_PRIME_CAP_IMPORT) != 0)
     }
 }

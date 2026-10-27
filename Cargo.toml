@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 drm = "0.15.0"
+drm-ffi = "0.9.1"
 nix = "0.31.3"
 procfs = "0.18.0"
 thiserror = "2.0.21"
