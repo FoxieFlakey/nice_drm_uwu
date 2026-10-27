@@ -7,7 +7,6 @@ use std::{
     sync::Arc,
 };
 
-use dma_buf::DmaHeap;
 pub use drm::ClientCapability;
 use drm::{Device, DriverCapability};
 use thiserror::Error;
@@ -24,8 +23,6 @@ pub struct Gpu {
     kind: NodeType,
     driver: DriverInfo,
     busid: String,
-    #[expect(unused)]
-    dma_heap: DmaHeap,
 }
 
 #[derive(Error, Debug)]
@@ -44,8 +41,6 @@ pub enum OpenError {
     PrimeSupportNotPresent,
     #[error("Cant query prime handle support")]
     QueryPrimeSupport(#[source] io::Error),
-    #[error("Cant open system DMA buffer")]
-    OpeningDmaHeap(#[source] dma_buf::OpenError),
 }
 
 impl Gpu {
@@ -72,8 +67,6 @@ impl Gpu {
             driver: DriverInfo::make(&gpu).map_err(OpenError::GettingDriverInfo)?,
             gpu,
             busid,
-            dma_heap: DmaHeap::open(dma_buf::DEFAULT_SYSTEM_HEAP)
-                .map_err(OpenError::OpeningDmaHeap)?,
         };
 
         if !this
