@@ -3,6 +3,8 @@ use std::{
     ops::{Bound, Range, RangeBounds},
 };
 
+use nix::errno::Errno;
+
 mod private {
     pub trait Sealed {}
 }
@@ -15,6 +17,13 @@ impl private::Sealed for io::Error {}
 impl IsEIntr for io::Error {
     fn is_eintr(&self) -> bool {
         matches!(self.kind(), io::ErrorKind::Interrupted)
+    }
+}
+
+impl private::Sealed for Errno {}
+impl IsEIntr for Errno {
+    fn is_eintr(&self) -> bool {
+        matches!(self, Errno::EINTR)
     }
 }
 

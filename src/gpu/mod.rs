@@ -128,4 +128,8 @@ impl Gpu {
         let ret = self.get_driver_capability(DriverCapability::Prime)?;
         Ok(ret & u64::from(drm_ffi::DRM_PRIME_CAP_EXPORT | drm_ffi::DRM_PRIME_CAP_IMPORT) != 0)
     }
+
+    pub fn is_add_fb2_modifier_supported(&self) -> io::Result<bool> {
+        Ok(self.get_driver_capability(DriverCapability::AddFB2Modifiers)? != 0)
+    }
 }

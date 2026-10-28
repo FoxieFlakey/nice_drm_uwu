@@ -1,26 +1,36 @@
 use std::{
     io,
     ops::Range,
+    os::fd::AsFd,
     path::Path,
     sync::{Arc, OnceLock},
 };
 
-use drm::{Device, control::Device as ControlDevice};
+use drm::{Device, buffer, control::Device as ControlDevice};
 use thiserror::Error;
 
 use crate::{
     drm_type::NodeType,
     fds::PrimaryGpuFd,
     gpu::{self, Gpu},
-    primary_gpu::{connector::Connector, crtc::Crtc, encoder::Encoder, master_state::MasterGuard},
+    primary_gpu::{
+        connector::Connector,
+        crtc::Crtc,
+        dumb_buffer::{BufferFormat, BufferModifier, DumbBuffer},
+        encoder::Encoder,
+        master_state::MasterGuard,
+    },
     util::{self, retry_eintr},
 };
 
 pub mod connector;
 pub mod crtc;
+pub mod dumb_buffer;
 pub mod encoder;
+pub mod framebuffer;
 pub mod master_state;
 pub mod mode;
+pub mod plane;
 
 pub struct PrimaryGpu {
     base: Arc<Gpu>,
@@ -200,5 +210,32 @@ impl PrimaryGpu {
 
     pub fn supported_fb_height(&self) -> Range<u32> {
         self.supported_fb_height.clone()
+    }
+
+    pub fn alloc_dumb_buffer(
+        self: &Arc<PrimaryGpu>,
+        resolution: (u32, u32),
+        modifier: BufferModifier,
+        format: BufferFormat,
+    ) -> io::Result<DumbBuffer> {
+        let info = drm_ffi::mode::dumbbuffer::create(
+            self.fd.as_fd(),
+            resolution.0,
+            resolution.1,
+            format.bits_per_pixel(),
+            0,
+        )?;
+
+        Ok(DumbBuffer {
+            handle: drm::control::from_u32::<buffer::Handle>(info.handle)
+                .expect("create dumb buffer ioctl failed"),
+            gpu: self.clone(),
+            width: resolution.0.try_into().unwrap(),
+            height: resolution.1.try_into().unwrap(),
+            pitch: info.pitch.try_into().unwrap(),
+            length: info.size.try_into().unwrap(),
+            format,
+            modifier,
+        })
     }
 }

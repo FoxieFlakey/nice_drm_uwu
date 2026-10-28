@@ -5,9 +5,9 @@ edition = "2024"
 
 [dependencies]
 dma-buf = { version = "0.1.0", path = "../dma-buf/dma-buf" }
-drm = "0.15.0"
+drm = { path = "../drm" }
 drm-ffi = "0.9.1"
-nix = "0.31.3"
+nix = { version = "0.31.3", features = ["mman"] }
 procfs = "0.18.0"
 thiserror = "2.0.21"
 yoke = { version = "0.8.4", features = ["derive"] }
