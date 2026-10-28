@@ -1,19 +1,22 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     io,
     sync::{Arc, Weak},
 };
 
-use drm::control::{Device, ResourceHandles, crtc, encoder};
+use drm::control::{Device, ResourceHandles, crtc, encoder, property};
+use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::{
-    primary_gpu::{PrimaryGpu, crtc::Crtc},
+    primary_gpu::{PrimaryGpu, crtc::Crtc, has_props::HasProperties},
     util::retry_eintr,
 };
 
 pub struct Encoder {
     gpu: Weak<PrimaryGpu>,
+    cached_props: RwLock<HashMap<String, (property::Handle, property::Info)>>,
     pub(super) handle: encoder::Handle,
     kind: encoder::Kind,
     valid_crtcs: Vec<Arc<Crtc>>,
@@ -78,6 +81,7 @@ impl Encoder {
             gpu,
             handle,
             valid_crtcs,
+            cached_props: RwLock::new(HashMap::new()),
             kind: info.kind(),
         })
     }
@@ -106,5 +110,25 @@ impl Encoder {
                     .ok_or(GetCurrentCrtcError::UnknownCrtcHandle(x))
             })
             .transpose()
+    }
+}
+
+impl HasProperties for Encoder {
+    type HandleType = encoder::Handle;
+
+    fn get_primary_gpu(&self) -> Arc<PrimaryGpu> {
+        self.gpu
+            .upgrade()
+            .expect("Attempgint to use dead primary GPU")
+    }
+
+    fn get_cache(
+        &self,
+    ) -> &parking_lot::RwLock<HashMap<String, (property::Handle, property::Info)>> {
+        &self.cached_props
+    }
+
+    fn get_handle(&self) -> Self::HandleType {
+        self.handle
     }
 }

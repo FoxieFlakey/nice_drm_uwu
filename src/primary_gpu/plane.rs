@@ -1,18 +1,27 @@
 use std::{
+    collections::HashMap,
+    fmt::Display,
     io,
-    os::fd::AsFd,
     sync::{Arc, Weak},
 };
 
-use drm::control::{Device, ResourceHandles, crtc, plane};
+use drm::control::{Device, ResourceHandles, crtc, plane, property};
+use parking_lot::RwLock;
 use thiserror::Error;
 
-use crate::primary_gpu::{PrimaryGpu, crtc::Crtc, framebuffer::Framebuffer};
+use crate::primary_gpu::{PrimaryGpu, crtc::Crtc, has_props::HasProperties};
 
 pub struct Plane {
     gpu: Weak<PrimaryGpu>,
+    cached_props: RwLock<HashMap<String, (property::Handle, property::Info)>>,
     pub(super) handle: plane::Handle,
     pub(super) valid_crtcs: Vec<Weak<Crtc>>,
+}
+
+impl Display for Plane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Plane {}", u32::from(self.handle))
+    }
 }
 
 #[derive(Error, Debug)]
@@ -58,50 +67,8 @@ impl Plane {
             gpu,
             handle,
             valid_crtcs,
+            cached_props: RwLock::new(HashMap::new()),
         })
-    }
-
-    fn set_framebuffer_impl(
-        &self,
-        crtc: Option<&Crtc>,
-        framebuffer: Option<&Framebuffer>,
-        crtc_rect: (i32, i32, u32, u32),
-        src_rect: (u32, u32, u32, u32),
-    ) -> io::Result<()> {
-        let gpu = self
-            .gpu
-            .upgrade()
-            .expect("Attempting to use plane when primary gpu is dead");
-
-        drm_ffi::mode::set_plane(
-            gpu.fd.as_fd(),
-            u32::from(self.handle),
-            crtc.map(|x| u32::from(x.handle)).unwrap_or(0),
-            framebuffer.map(|x| u32::from(x.handle)).unwrap_or(0),
-            0,
-            crtc_rect.0,
-            crtc_rect.1,
-            crtc_rect.2,
-            crtc_rect.3,
-            src_rect.0 << 16,
-            src_rect.1 << 16,
-            src_rect.2 << 16,
-            src_rect.3 << 16,
-        )?;
-        Ok(())
-    }
-
-    pub fn clear_framebuffer_basic(&self) -> io::Result<()> {
-        self.set_framebuffer_impl(None, None, (0, 0, 0, 0), (0, 0, 0, 0))
-    }
-
-    pub fn set_framebuffer_basic(&self, crtc: &Crtc, framebuffer: &Framebuffer) -> io::Result<()> {
-        self.set_framebuffer_impl(
-            Some(crtc),
-            Some(framebuffer),
-            (0, 0, framebuffer.width, framebuffer.height),
-            (0, 0, framebuffer.width, framebuffer.height),
-        )
     }
 
     pub fn current_crtc(&self) -> Result<Option<Arc<Crtc>>, GettingPlaneInfoError> {
@@ -121,5 +88,25 @@ impl Plane {
                     .cloned()
             })
             .transpose()
+    }
+}
+
+impl HasProperties for Plane {
+    type HandleType = plane::Handle;
+
+    fn get_primary_gpu(&self) -> Arc<PrimaryGpu> {
+        self.gpu
+            .upgrade()
+            .expect("Attempgint to use dead primary GPU")
+    }
+
+    fn get_cache(
+        &self,
+    ) -> &parking_lot::RwLock<HashMap<String, (property::Handle, property::Info)>> {
+        &self.cached_props
+    }
+
+    fn get_handle(&self) -> Self::HandleType {
+        self.handle
     }
 }

@@ -1,19 +1,22 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     io,
     sync::{Arc, OnceLock, Weak},
 };
 
-use drm::control::{Device, crtc};
+use drm::control::{Device, crtc, property};
+use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::{
-    primary_gpu::{PrimaryGpu, mode::Mode, plane::Plane},
+    primary_gpu::{PrimaryGpu, has_props::HasProperties, mode::Mode, plane::Plane},
     util::retry_eintr,
 };
 
 pub struct Crtc {
     gpu: Weak<PrimaryGpu>,
+    cached_props: RwLock<HashMap<String, (property::Handle, property::Info)>>,
     pub(super) handle: crtc::Handle,
     pub(super) supported_planes: OnceLock<Vec<Arc<Plane>>>,
 }
@@ -34,6 +37,7 @@ impl Crtc {
             gpu,
             handle,
             supported_planes: OnceLock::new(),
+            cached_props: RwLock::new(HashMap::new()),
         }
     }
 
@@ -79,5 +83,25 @@ impl Crtc {
         self.supported_planes
             .get()
             .expect("Must be initialized already")
+    }
+}
+
+impl HasProperties for Crtc {
+    type HandleType = crtc::Handle;
+
+    fn get_primary_gpu(&self) -> Arc<PrimaryGpu> {
+        self.gpu
+            .upgrade()
+            .expect("Attempgint to use dead primary GPU")
+    }
+
+    fn get_cache(
+        &self,
+    ) -> &parking_lot::RwLock<HashMap<String, (property::Handle, property::Info)>> {
+        &self.cached_props
+    }
+
+    fn get_handle(&self) -> Self::HandleType {
+        self.handle
     }
 }

@@ -5,6 +5,8 @@ use std::{
 
 use nix::errno::Errno;
 
+pub mod multi_errors;
+
 mod private {
     pub trait Sealed {}
 }

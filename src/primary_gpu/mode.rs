@@ -6,7 +6,7 @@ use drm::control::ModeTypeFlags;
 
 #[derive(Clone)]
 pub struct Mode {
-    inner: drm::control::Mode,
+    pub(super) inner: drm::control::Mode,
     mode_type: ModeType,
     flags: ModeFlags,
 }

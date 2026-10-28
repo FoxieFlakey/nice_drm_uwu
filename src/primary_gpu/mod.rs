@@ -15,6 +15,7 @@ use crate::{
     fds::PrimaryGpuFd,
     gpu::{self, Gpu},
     primary_gpu::{
+        atomic_req::AtomicReq,
         connector::Connector,
         crtc::Crtc,
         dumb_buffer::{BufferFormat, BufferModifier, DumbBuffer},
@@ -24,6 +25,8 @@ use crate::{
     },
     util::{self, retry_eintr},
 };
+
+mod has_props;
 
 pub mod atomic_req;
 pub mod connector;
@@ -303,5 +306,9 @@ impl PrimaryGpu {
             format,
             modifier,
         })
+    }
+
+    pub fn create_atomic_req(self: &Arc<PrimaryGpu>) -> AtomicReq {
+        AtomicReq::new(self.clone())
     }
 }

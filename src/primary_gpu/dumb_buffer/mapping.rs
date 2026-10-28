@@ -1,4 +1,4 @@
-use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, slice};
+use std::{ffi::c_void, marker::PhantomData, mem, ptr::NonNull, slice};
 
 use nix::sys::mman::munmap;
 
@@ -23,11 +23,13 @@ impl DumbMapping<'_> {
     // this is present for some "edge case" where its unwieldly to
     // use lifetimes. Kernel won't unmaps even if buffer destroyed
     pub fn forget_lifetime(self) -> DumbMapping<'static> {
-        DumbMapping {
+        let ret = DumbMapping {
             _owner: PhantomData,
             len: self.len,
             ptr: self.ptr,
-        }
+        };
+        mem::forget(self);
+        ret
     }
 
     // # Safety

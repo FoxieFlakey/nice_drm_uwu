@@ -1,10 +1,11 @@
-use std::{fmt::Display, io, sync::Arc};
+use std::{collections::HashMap, fmt::Display, io, sync::Arc};
 
-use drm::control::{Device, connector, encoder};
+use drm::control::{Device, connector, encoder, property};
+use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::{
-    primary_gpu::{PrimaryGpu, encoder::Encoder, mode::Mode},
+    primary_gpu::{PrimaryGpu, encoder::Encoder, has_props::HasProperties, mode::Mode},
     util::retry_eintr,
 };
 
@@ -12,6 +13,7 @@ pub use drm::control::connector::{Interface, State, SubPixel};
 
 pub struct Connector {
     gpu: Arc<PrimaryGpu>,
+    cached_props: RwLock<HashMap<String, (property::Handle, property::Info)>>,
     pub(super) handle: connector::Handle,
     interface: Interface,
     interface_id: u32,
@@ -63,6 +65,7 @@ impl Connector {
             valid_encoders,
             current_encoder,
             subpixel: info.subpixel(),
+            cached_props: RwLock::new(HashMap::new()),
         })
     }
 
@@ -143,5 +146,23 @@ impl Connector {
 
     pub fn state(&self) -> State {
         self.connection
+    }
+}
+
+impl HasProperties for Connector {
+    type HandleType = connector::Handle;
+
+    fn get_primary_gpu(&self) -> Arc<PrimaryGpu> {
+        self.gpu.clone()
+    }
+
+    fn get_cache(
+        &self,
+    ) -> &parking_lot::RwLock<HashMap<String, (property::Handle, property::Info)>> {
+        &self.cached_props
+    }
+
+    fn get_handle(&self) -> Self::HandleType {
+        self.handle
     }
 }
