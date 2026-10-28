@@ -1,16 +1,21 @@
-use std::{fmt::Display, io, sync::Weak};
+use std::{
+    fmt::Display,
+    io,
+    sync::{Arc, OnceLock, Weak},
+};
 
 use drm::control::{Device, crtc};
 use thiserror::Error;
 
 use crate::{
-    primary_gpu::{PrimaryGpu, mode::Mode},
+    primary_gpu::{PrimaryGpu, mode::Mode, plane::Plane},
     util::retry_eintr,
 };
 
 pub struct Crtc {
     gpu: Weak<PrimaryGpu>,
     pub(super) handle: crtc::Handle,
+    pub(super) supported_planes: OnceLock<Vec<Arc<Plane>>>,
 }
 
 #[derive(Error, Debug)]
@@ -25,7 +30,11 @@ impl Display for Crtc {
 
 impl Crtc {
     pub(crate) fn from_raw(gpu: Weak<PrimaryGpu>, handle: crtc::Handle) -> Self {
-        Self { gpu, handle }
+        Self {
+            gpu,
+            handle,
+            supported_planes: OnceLock::new(),
+        }
     }
 
     pub fn scan_position(&self) -> Result<(u32, u32), CantGetCrtcInfo> {
@@ -64,5 +73,11 @@ impl Crtc {
         })
         .map(|x| x.mode().map(Mode::from_raw))
         .map_err(CantGetCrtcInfo)
+    }
+
+    pub fn get_planes(&self) -> &[Arc<Plane>] {
+        self.supported_planes
+            .get()
+            .expect("Must be initialized already")
     }
 }

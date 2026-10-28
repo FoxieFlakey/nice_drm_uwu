@@ -7,18 +7,20 @@ use crate::{primary_gpu::PrimaryGpu, util::retry_eintr};
 // Currently framebuffer doesnt do much than being handle
 pub struct Framebuffer {
     pub(super) gpu: Arc<PrimaryGpu>,
-    pub(super) framebuffer: framebuffer::Handle,
+    pub(super) handle: framebuffer::Handle,
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
 impl Drop for Framebuffer {
     fn drop(&mut self) {
-        retry_eintr(|| self.gpu.fd.destroy_framebuffer(self.framebuffer))
+        retry_eintr(|| self.gpu.fd.destroy_framebuffer(self.handle))
             .expect("Cannot destroy framebuffer");
     }
 }
 
 impl Framebuffer {
     pub fn dirty(&self) -> io::Result<()> {
-        retry_eintr(|| self.gpu.fd.dirty_framebuffer(self.framebuffer, &[]))
+        retry_eintr(|| self.gpu.fd.dirty_framebuffer(self.handle, &[]))
     }
 }

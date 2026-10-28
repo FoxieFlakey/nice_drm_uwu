@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     ops::Range,
     os::fd::AsFd,
@@ -6,7 +7,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use drm::{Device, buffer, control::Device as ControlDevice};
+use drm::{ClientCapability, Device, buffer, control::Device as ControlDevice};
 use thiserror::Error;
 
 use crate::{
@@ -19,10 +20,12 @@ use crate::{
         dumb_buffer::{BufferFormat, BufferModifier, DumbBuffer},
         encoder::Encoder,
         master_state::MasterGuard,
+        plane::Plane,
     },
     util::{self, retry_eintr},
 };
 
+pub mod atomic_req;
 pub mod connector;
 pub mod crtc;
 pub mod dumb_buffer;
@@ -35,6 +38,7 @@ pub mod plane;
 pub struct PrimaryGpu {
     base: Arc<Gpu>,
     fd: PrimaryGpuFd,
+    known_planes: OnceLock<Vec<Arc<Plane>>>,
     known_crtcs: OnceLock<Vec<Arc<Crtc>>>,
     known_encoders: OnceLock<Vec<Arc<Encoder>>>,
     supported_fb_width: Range<u32>,
@@ -60,10 +64,19 @@ pub enum GetConnectorsError {
 
 #[derive(Error, Debug)]
 pub enum CreatingPrimaryGPUError {
+    #[error("GPU dont support universal planes")]
+    CantEnableUniversalPlanes(#[source] io::Error),
+    #[error("Cannot retrieve planes")]
+    CantGetPlanes(#[source] io::Error),
     #[error("This GPU is not primary GPU")]
     GPUIsNotPrimary,
     #[error("Cannot get GPU resources")]
     GetResourcesOnGPU(#[source] io::Error),
+    #[error("Cant query plane information for {0:?}")]
+    QueryPlaneInformation(
+        drm::control::plane::Handle,
+        #[source] plane::CreatingPlaneError,
+    ),
     #[error("Cant query encoder information for {0:?}")]
     QueryEncoderInformation(
         drm::control::encoder::Handle,
@@ -123,6 +136,9 @@ impl PrimaryGpu {
     pub fn try_from_gpu(gpu: Arc<Gpu>) -> Result<Arc<Self>, CreatingPrimaryGPUError> {
         match gpu.get_type() {
             NodeType::Primary => {
+                gpu.set_client_capability(ClientCapability::UniversalPlanes, true)
+                    .map_err(CreatingPrimaryGPUError::CantEnableUniversalPlanes)?;
+
                 let fd = PrimaryGpuFd(gpu.gpu.clone());
                 let resources = retry_eintr(|| fd.resource_handles())
                     .map_err(CreatingPrimaryGPUError::GetResourcesOnGPU)?;
@@ -130,6 +146,7 @@ impl PrimaryGpu {
                 let this = Arc::new(Self {
                     fd,
                     base: gpu,
+                    known_planes: OnceLock::new(),
                     known_crtcs: OnceLock::new(),
                     known_encoders: OnceLock::new(),
                     supported_fb_height: util::to_standard_range(resources.supported_fb_height()),
@@ -146,6 +163,55 @@ impl PrimaryGpu {
                     .set(crtcs)
                     .ok()
                     .expect("Nothing should initialized the known_crtcs");
+
+                let mut planes = Vec::new();
+                let mut crtc_planes = HashMap::new();
+                for plane in this
+                    .fd
+                    .plane_handles()
+                    .map_err(CreatingPrimaryGPUError::CantGetPlanes)?
+                {
+                    let plane = Arc::new(
+                        Plane::from_raw(Arc::downgrade(&this), plane, &resources).map_err(|e| {
+                            CreatingPrimaryGPUError::QueryPlaneInformation(plane, e)
+                        })?,
+                    );
+
+                    for crtc in &plane.valid_crtcs {
+                        let crtc = crtc.upgrade().unwrap();
+                        crtc_planes
+                            .entry(crtc.handle)
+                            .or_insert(Vec::new())
+                            .push(plane.clone());
+                    }
+
+                    planes.push(plane);
+                }
+
+                planes.sort_by_key(|x| u32::from(x.handle));
+                this.known_planes
+                    .set(planes)
+                    .ok()
+                    .expect("Nothing should initialized the known_planes");
+
+                // Now lets store support planes to each CRTC
+                for (crtc, mut supported_planes) in crtc_planes {
+                    supported_planes.sort_by_key(|x| u32::from(x.handle));
+                    let crtc = this
+                        .find_crtc(crtc)
+                        .expect("Contain unknown CRTC when shouldnt");
+
+                    crtc.supported_planes
+                        .set(supported_planes)
+                        .ok()
+                        .expect("Already initialized?");
+                }
+
+                // And fill with empty vec for crtc that is has no planes?
+                for crtc in this.known_crtcs.get().unwrap() {
+                    // Dont care if its already set
+                    let _ = crtc.supported_planes.set(Vec::new());
+                }
 
                 let mut encoders = Vec::new();
                 for &encoder in &resources.encoders {

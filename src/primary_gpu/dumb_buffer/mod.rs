@@ -13,11 +13,12 @@ pub mod mapping;
 pub struct DumbBuffer {
     pub(super) gpu: Arc<PrimaryGpu>,
     pub(super) handle: drm::buffer::Handle,
-    pub(super) width: usize,
-    pub(super) height: usize,
-    pub(super) pitch: usize,
-    pub(super) length: usize,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) pitch: u32,
+    pub(super) length: u32,
     pub(super) format: BufferFormat,
+    #[expect(unused)]
     pub(super) modifier: BufferModifier,
 }
 
@@ -33,19 +34,19 @@ impl DumbBuffer {
         self.format
     }
 
-    pub fn get_pitch(&self) -> usize {
+    pub fn get_pitch(&self) -> u32 {
         self.pitch
     }
 
-    pub fn get_width(&self) -> usize {
+    pub fn get_width(&self) -> u32 {
         self.width
     }
 
-    pub fn get_height(&self) -> usize {
+    pub fn get_height(&self) -> u32 {
         self.height
     }
 
-    pub fn get_length(&self) -> usize {
+    pub fn get_length(&self) -> u32 {
         self.length
     }
 
@@ -53,11 +54,11 @@ impl DumbBuffer {
         let ret = retry_eintr(|| {
             drm_ffi::mode::add_fb2(
                 self.gpu.fd.as_fd(),
-                self.width as u32,
-                self.height as u32,
+                self.width,
+                self.height,
                 self.format.as_drm_fourcc() as u32,
                 &[self.handle.into(), 0, 0, 0],
-                &[self.pitch as u32, 0, 0, 0],
+                &[self.pitch, 0, 0, 0],
                 &[0, 0, 0, 0],
                 &[0, 0, 0, 0],
                 0,
@@ -66,7 +67,9 @@ impl DumbBuffer {
 
         Ok(Framebuffer {
             gpu: self.gpu.clone(),
-            framebuffer: drm::control::from_u32(ret.fb_id).unwrap(),
+            handle: drm::control::from_u32(ret.fb_id).unwrap(),
+            width: self.width,
+            height: self.height,
         })
     }
 
@@ -79,7 +82,7 @@ impl DumbBuffer {
         let ptr = unsafe {
             mmap(
                 None,
-                NonZero::try_from(self.length).unwrap(),
+                NonZero::try_from(self.length as usize).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 self.gpu.fd.as_fd(),
@@ -89,7 +92,7 @@ impl DumbBuffer {
 
         Ok(DumbMapping {
             _owner: std::marker::PhantomData,
-            len: self.length,
+            len: self.length as usize,
             ptr,
         })
     }
@@ -101,6 +104,7 @@ pub enum BufferModifier {
 }
 
 impl BufferModifier {
+    #[expect(unused)]
     pub(super) fn as_drm_modifier(self) -> DrmModifier {
         match self {
             BufferModifier::Linear => DrmModifier::Linear,
