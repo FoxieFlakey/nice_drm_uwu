@@ -2,7 +2,7 @@ use std::{
     ffi::OsString,
     fs::OpenOptions,
     io,
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     path::Path,
     sync::Arc,
 };
@@ -131,5 +131,9 @@ impl Gpu {
 
     pub fn is_add_fb2_modifier_supported(&self) -> io::Result<bool> {
         Ok(self.get_driver_capability(DriverCapability::AddFB2Modifiers)? != 0)
+    }
+
+    pub fn get_fd<'a>(&'a self) -> BorrowedFd<'a> {
+        self.gpu.as_fd()
     }
 }

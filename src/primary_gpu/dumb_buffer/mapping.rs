@@ -10,6 +10,9 @@ pub struct DumbMapping<'a> {
     pub(super) ptr: NonNull<c_void>,
 }
 
+unsafe impl Send for DumbMapping<'_> {}
+unsafe impl Sync for DumbMapping<'_> {}
+
 impl Drop for DumbMapping<'_> {
     fn drop(&mut self) {
         // Nobody acesses the 'ptr' anymore
