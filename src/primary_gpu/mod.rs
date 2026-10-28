@@ -5,9 +5,11 @@ use std::{
     os::fd::AsFd,
     path::Path,
     sync::{Arc, OnceLock},
+    time::Instant,
 };
 
 use drm::{ClientCapability, Device, buffer, control::Device as ControlDevice};
+use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
 
 use crate::{
@@ -23,7 +25,7 @@ use crate::{
         master_state::MasterGuard,
         plane::Plane,
     },
-    util::{self, retry_eintr},
+    util::{self, gemini, retry_eintr},
 };
 
 mod has_props;
@@ -41,6 +43,7 @@ pub mod plane;
 pub struct PrimaryGpu {
     base: Arc<Gpu>,
     fd: PrimaryGpuFd,
+    recv_events_lock: Mutex<()>,
     known_planes: OnceLock<Vec<Arc<Plane>>>,
     known_crtcs: OnceLock<Vec<Arc<Crtc>>>,
     known_encoders: OnceLock<Vec<Arc<Encoder>>>,
@@ -154,6 +157,7 @@ impl PrimaryGpu {
                     known_encoders: OnceLock::new(),
                     supported_fb_height: util::to_standard_range(resources.supported_fb_height()),
                     supported_fb_width: util::to_standard_range(resources.supported_fb_height()),
+                    recv_events_lock: Mutex::new(()),
                 });
 
                 let mut crtcs = Vec::new();
@@ -308,7 +312,98 @@ impl PrimaryGpu {
         })
     }
 
+    pub fn read_events<'a>(&'a self) -> io::Result<EventsIterator<'a>> {
+        let guard = self.recv_events_lock.lock();
+        Ok(EventsIterator {
+            iter: self.fd.receive_events()?,
+            owner: self,
+            _guard: guard,
+        })
+    }
+
     pub fn create_atomic_req(self: &Arc<PrimaryGpu>) -> AtomicReq {
         AtomicReq::new(self.clone())
+    }
+}
+
+pub struct PageFlipEvent {
+    pub frame: u32,
+    pub time: Instant,
+    pub crtc: Arc<Crtc>,
+}
+
+pub struct VBlankSequence {
+    pub crtc: Arc<Crtc>,
+    pub sequence: u64,
+    pub time: Instant,
+}
+
+pub enum Event {
+    VBlankSequence(VBlankSequence),
+    PageFlipDone(PageFlipEvent),
+    Unknown(Vec<u8>),
+}
+
+pub struct EventsIterator<'a> {
+    iter: drm::control::Events,
+    owner: &'a PrimaryGpu,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl Iterator for EventsIterator<'_> {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next()? {
+            drm::control::Event::Vblank(_) => {
+                unimplemented!("Wont implement legacy vblank event")
+            }
+            drm::control::Event::PageFlip(page_flip_event) => {
+                Some(Event::PageFlipDone(PageFlipEvent {
+                    frame: page_flip_event.frame,
+                    time: gemini::drm_time_to_instant(page_flip_event.duration.as_nanos() as i64),
+                    crtc: self
+                        .owner
+                        .find_crtc(page_flip_event.crtc)
+                        .expect("Unknown CRTC handle")
+                        .clone(),
+                }))
+            }
+            drm::control::Event::Unknown(data) => {
+                assert!(
+                    data.len() >= size_of::<drm_ffi::drm_event>(),
+                    "Unknown payload is too small to fit drm_event"
+                );
+
+                let event_ptr = data.as_ptr().cast::<drm_ffi::drm_event>();
+                let event = unsafe { std::ptr::read_unaligned(event_ptr) };
+                match event.type_ {
+                    drm_ffi::DRM_EVENT_CRTC_SEQUENCE => {
+                        assert!(
+                            data.len() >= size_of::<drm_ffi::drm_event_crtc_sequence>(),
+                            "CRTC sequence event payload is too small to fit drm_event_crtc_sequence"
+                        );
+
+                        let event = unsafe {
+                            std::ptr::read_unaligned(
+                                event_ptr.cast::<drm_ffi::drm_event_crtc_sequence>(),
+                            )
+                        };
+
+                        Some(Event::VBlankSequence(VBlankSequence {
+                            crtc: self
+                                .owner
+                                .find_crtc(drm::control::from_u32(event.user_data as u32).unwrap())
+                                .expect("Unknown CRTC handle")
+                                .clone(),
+                            sequence: event.sequence,
+                            time: gemini::drm_time_to_instant(event.time_ns),
+                        }))
+                    }
+
+                    _ => Some(Event::Unknown(data)),
+                }
+            }
+        }
     }
 }

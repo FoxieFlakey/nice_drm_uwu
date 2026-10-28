@@ -8,6 +8,7 @@ use std::{
 };
 
 pub use drm::ClientCapability;
+
 use drm::{Device, DriverCapability};
 use thiserror::Error;
 

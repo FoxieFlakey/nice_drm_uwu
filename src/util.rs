@@ -7,6 +7,26 @@ use nix::errno::Errno;
 
 pub mod multi_errors;
 
+pub mod gemini {
+    use nix::time::{ClockId, clock_gettime};
+    use std::time::{Duration, Instant};
+
+    pub fn drm_time_to_instant(time_ns: i64) -> Instant {
+        let now_instant = Instant::now();
+        let now_mono_ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
+        let now_mono_ns =
+            (now_mono_ts.tv_sec() as i64 * 1_000_000_000) + now_mono_ts.tv_nsec() as i64;
+
+        let delta_ns = time_ns - now_mono_ns;
+
+        if delta_ns >= 0 {
+            now_instant + Duration::from_nanos(delta_ns as u64)
+        } else {
+            now_instant - Duration::from_nanos(delta_ns.abs() as u64)
+        }
+    }
+}
+
 mod private {
     pub trait Sealed {}
 }

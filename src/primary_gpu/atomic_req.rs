@@ -17,7 +17,8 @@ pub struct AtomicReq {
     property_blobs: Vec<u64>,
     errors: MultipleErrors,
     is_modeset: bool,
-    do_pageflip: bool,
+    requested_pageflip_event: bool,
+    nonblocking: bool,
 }
 
 impl AtomicReq {
@@ -28,7 +29,8 @@ impl AtomicReq {
             property_blobs: Vec::new(),
             errors: MultipleErrors::new(),
             is_modeset: false,
-            do_pageflip: false,
+            requested_pageflip_event: false,
+            nonblocking: false,
         }
     }
 
@@ -355,8 +357,13 @@ impl AtomicReq {
         self
     }
 
-    pub fn pageflip(&mut self, can_do: bool) -> &mut Self {
-        self.do_pageflip = can_do;
+    pub fn request_pageflip_event(&mut self, can_do: bool) -> &mut Self {
+        self.requested_pageflip_event = can_do;
+        self
+    }
+
+    pub fn nonblocking(&mut self, val: bool) -> &mut Self {
+        self.nonblocking = val;
         self
     }
 
@@ -375,8 +382,12 @@ impl AtomicReq {
             flags |= AtomicCommitFlags::ALLOW_MODESET;
         }
 
-        if self.do_pageflip {
+        if self.requested_pageflip_event {
             flags |= AtomicCommitFlags::PAGE_FLIP_EVENT;
+        }
+
+        if self.nonblocking {
+            flags |= AtomicCommitFlags::NONBLOCK;
         }
 
         self.gpu

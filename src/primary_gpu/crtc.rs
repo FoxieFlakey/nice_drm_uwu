@@ -2,16 +2,20 @@ use std::{
     collections::HashMap,
     fmt::Display,
     io,
+    os::fd::{AsFd, AsRawFd},
     sync::{Arc, OnceLock, Weak},
+    time::Instant,
 };
 
 use drm::control::{Device, crtc, property};
+use enumflags2::BitFlags;
+use nix::ioctl_readwrite;
 use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::{
     primary_gpu::{PrimaryGpu, has_props::HasProperties, mode::Mode, plane::Plane},
-    util::retry_eintr,
+    util::{gemini, retry_eintr},
 };
 
 pub struct Crtc {
@@ -29,6 +33,24 @@ impl Display for Crtc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CRTC {}", u32::from(self.handle))
     }
+}
+
+pub struct SequenceInfo {
+    pub active: bool,
+    pub sequence: u64,
+    pub sequence_time: Instant,
+}
+
+pub enum VBlankSequenceTarget {
+    Absolute(u64),
+    Relative(u64),
+}
+
+#[enumflags2::bitflags]
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum VBlankSequenceFlags {
+    NextOnMiss = drm_ffi::DRM_CRTC_SEQUENCE_NEXT_ON_MISS,
 }
 
 impl Crtc {
@@ -83,6 +105,69 @@ impl Crtc {
         self.supported_planes
             .get()
             .expect("Must be initialized already")
+    }
+
+    pub fn get_vblank_sequence(&self) -> io::Result<SequenceInfo> {
+        let gpu_arc = self
+            .gpu
+            .upgrade()
+            .expect("Attempting to use CRTC belonging to dead primary gpu");
+        let fd = gpu_arc.fd.as_fd();
+        let mut sequence_arg = drm_ffi::drm_crtc_get_sequence {
+            crtc_id: u32::from(self.handle),
+            sequence: 0,
+            active: 0,
+            sequence_ns: 0,
+        };
+
+        ioctl_readwrite!(
+            crtc_get_sequence,
+            drm_ffi::DRM_IOCTL_BASE,
+            0x3b,
+            drm_ffi::drm_crtc_get_sequence
+        );
+
+        unsafe { crtc_get_sequence(fd.as_raw_fd(), &raw mut sequence_arg) }?;
+
+        Ok(SequenceInfo {
+            active: sequence_arg.active != 0,
+            sequence: sequence_arg.sequence,
+            sequence_time: gemini::drm_time_to_instant(sequence_arg.sequence_ns),
+        })
+    }
+
+    pub fn queue_vblank_sequence(
+        &self,
+        target_sequence: VBlankSequenceTarget,
+        flags: BitFlags<VBlankSequenceFlags>,
+    ) -> io::Result<()> {
+        let gpu_arc = self
+            .gpu
+            .upgrade()
+            .expect("Attempting to use CRTC belonging to dead primary gpu");
+        let fd = gpu_arc.fd.as_fd();
+
+        let (sequence, wait_type) = match target_sequence {
+            VBlankSequenceTarget::Absolute(n) => (n, 0),
+            VBlankSequenceTarget::Relative(n) => (n, drm_ffi::DRM_CRTC_SEQUENCE_RELATIVE),
+        };
+
+        let mut sequence_arg = drm_ffi::drm_crtc_queue_sequence {
+            crtc_id: u32::from(self.handle),
+            flags: flags.bits() | wait_type,
+            sequence,
+            user_data: u32::from(self.handle).into(),
+        };
+
+        ioctl_readwrite!(
+            crtc_queue_sequence,
+            drm_ffi::DRM_IOCTL_BASE,
+            0x3c,
+            drm_ffi::drm_crtc_queue_sequence
+        );
+
+        unsafe { crtc_queue_sequence(fd.as_raw_fd(), &raw mut sequence_arg) }?;
+        Ok(())
     }
 }
 
